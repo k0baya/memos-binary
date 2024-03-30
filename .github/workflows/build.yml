@@ -31,29 +31,40 @@ jobs:
         cd memos/web
         corepack enable && pnpm i --frozen-lockfile
         pnpm build
-        cd ..
+        mkdir -p ../artifact
+        mv -f dist ../artifact/dist
+        cd ../..
 
     - name: Build binary
       run: |
         cd memos
-        GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go build -o memos ./bin/memos/main.go
+        GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o memos ./bin/memos/main.go && rm -f artifact/memos && cp memos artifact/memos && cd artifact && tar -czvf ../memos-linux-amd64.tar.gz * && cd ..
+        GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o memos ./bin/memos/main.go && rm -f artifact/memos && cp memos artifact/memos && cd artifact && tar -czvf ../memos-linux-arm64.tar.gz * && cd ..
+        GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -o memos ./bin/memos/main.go && rm -f artifact/memos && cp memos artifact/memos && cd artifact && tar -czvf ../memos-linux-armv7.tar.gz * && cd ..
+        GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o memos ./bin/memos/main.go && rm -f artifact/memos && cp memos artifact/memos && cd artifact && tar -czvf ../memos-windows-amd64.tar.gz * && cd ..
+        GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go build -o memos ./bin/memos/main.go && rm -f artifact/memos && cp memos artifact/memos && cd artifact && tar -czvf ../memos-windows-arm64.tar.gz * && cd ..
+        GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -o memos ./bin/memos/main.go && rm -f artifact/memos && cp memos artifact/memos && cd artifact && tar -czvf ../memos-darwin-amd64.tar.gz * && cd ..
+        GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o memos ./bin/memos/main.go && rm -f artifact/memos && cp memos artifact/memos && cd artifact && tar -czvf ../memos-darwin-arm64.tar.gz * && cd ..
+        GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go build -o memos ./bin/memos/main.go && rm -f artifact/memos && cp memos artifact/memos && cd artifact && tar -czvf ../memos-freebsd-amd64.tar.gz * && cd ..
+        GOOS=freebsd GOARCH=arm64 CGO_ENABLED=0 go build -o memos ./bin/memos/main.go && rm -f artifact/memos && cp memos artifact/memos && cd artifact && tar -czvf ../memos-freebsd-arm64.tar.gz * && cd ..
+        GOOS=freebsd GOARCH=arm CGO_ENABLED=0 go build -o memos ./bin/memos/main.go && rm -f artifact/memos && cp memos artifact/memos && cd artifact && tar -czvf ../memos-freebsd-armv7.tar.gz * && cd ..
         cd ..
-
-    - name: Make Archive
-      run: |
-        cd memos
-        mkdir -p artifact
-        mv -f memos artifact/memos
-        mv -f web/dist artifact/dist
-        cd artifact && tar -czvf ../memos-freebsd-amd64.tar.gz *
-        cd ../..
         
     - name: Upload artifact
       uses: actions/upload-artifact@main
       with:
         name: memos-freebsd-amd64
         path: |
+            memos/memos-linux-amd64.tar.gz
+            memos/memos-linux-arm64.tar.gz
+            memos/memos-linux-armv7.tar.gz
+            memos/memos-windows-amd64.tar.gz
+            memos/memos-windows-arm64.tar.gz
+            memos/memos-darwin-amd64.tar.gz
+            memos/memos-darwin-arm64.tar.gz
             memos/memos-freebsd-amd64.tar.gz
+            memos/memos-freebsd-arm64.tar.gz
+            memos/memos-freebsd-armv7.tar.gz
 
     - name: Generate release tag
       id: tag
@@ -66,7 +77,16 @@ jobs:
       with:
         tag_name: ${{ steps.tag.outputs.release_tag }}
         files: |
-              memos/memos-freebsd-amd64.tar.gz
+            memos/memos-linux-amd64.tar.gz
+            memos/memos-linux-arm64.tar.gz
+            memos/memos-linux-armv7.tar.gz
+            memos/memos-windows-amd64.tar.gz
+            memos/memos-windows-arm64.tar.gz
+            memos/memos-darwin-amd64.tar.gz
+            memos/memos-darwin-arm64.tar.gz
+            memos/memos-freebsd-amd64.tar.gz
+            memos/memos-freebsd-arm64.tar.gz
+            memos/memos-freebsd-armv7.tar.gz
               
     - name: Delete workflow runs
       uses: Mattraks/delete-workflow-runs@v2
