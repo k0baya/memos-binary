@@ -1,0 +1,77 @@
+name: Build
+
+on: workflow_dispatch
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Build
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: 'stable'
+        check-latest: true
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+
+    - name: Clone Repo
+      run: |
+        export LATEST_APP=$(wget -qO- https://api.github.com/repos/usememos/memos/tags | gawk -F '["v]' '/name/{print "v"$5;exit}')
+        git clone -b $LATEST_APP https://github.com/usememos/memos
+        npm install -g pnpm
+
+    - name: Build Frontend
+      run: |
+        cd memos/web
+        corepack enable && pnpm i --frozen-lockfile
+        pnpm build
+        cd ..
+
+    - name: Build binary
+      run: |
+        cd memos
+        GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go build -o memos ./bin/memos/main.go
+        cd ..
+
+    - name: Make Archive
+      run: |
+        cd memos
+        mkdir -p artifact
+        mv -f memos artifact/memos
+        mv -f web/dist artifact/dist
+        cd artifact && tar -czvf ../memos-freebsd-amd64.tar.gz *
+        cd ../..
+        
+    - name: Upload artifact
+      uses: actions/upload-artifact@main
+      with:
+        name: memos-freebsd-amd64
+        path: |
+            memos/memos-freebsd-amd64.tar.gz
+
+    - name: Generate release tag
+      id: tag
+      run: echo "release_tag=$(wget -qO- https://api.github.com/repos/usememos/memos/tags | gawk -F '["v]' '/name/{print "v"$5;exit}')" >> $GITHUB_OUTPUT
+
+    - name: Create release
+      uses: softprops/action-gh-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.tag.outputs.release_tag }}
+        files: |
+              memos/memos-freebsd-amd64.tar.gz
+              
+    - name: Delete workflow runs
+      uses: Mattraks/delete-workflow-runs@v2
+      with:
+        token: ${{ github.token }}
+        repository: ${{ github.repository }}
+        retain_days: 1
+        keep_minimum_runs: 8
