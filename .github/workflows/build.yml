@@ -32,7 +32,8 @@ jobs:
         corepack enable && pnpm i --frozen-lockfile
         pnpm build
         mkdir -p ../artifact
-        mv -f dist ../artifact/dist
+        cp -R dist ../artifact/dist
+        mv -f dist ../server/router/frontend/dist
         cd ../..
 
     - name: Build binary
