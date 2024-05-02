@@ -33,6 +33,8 @@ jobs:
         pnpm build
         mkdir -p ../artifact
         cp -R dist ../artifact/dist
+        rm -rf ../server/router/frontend/dist
+        mkdir -p ../server/router/frontend/dist
         mv -f dist ../server/router/frontend/dist
         cd ../..
 
