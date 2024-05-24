@@ -40,8 +40,8 @@ jobs:
     - name: Build binary
       run: |
         cd memos
-        GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o memos.exe ./bin/memos/main.go && rm -f artifact/memos && cp memos artifact/memos && cd artifact && tar -czvf ../memos-windows-amd64.tar.gz * && cd ..
-        GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go build -o memos ./bin/memos/main.go && rm -f artifact/memos && cp memos artifact/memos && cd artifact && tar -czvf ../memos-freebsd-amd64.tar.gz * && cd ..
+        GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o memos ./bin/memos/main.go && rm -f artifact/* && cp memos artifact/memos.exe && cd artifact && tar -czvf ../memos-windows-amd64.tar.gz * && cd ..
+        GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go build -o memos ./bin/memos/main.go && rm -f artifact/* && cp memos artifact/memos && cd artifact && tar -czvf ../memos-freebsd-amd64.tar.gz * && cd ..
         cd ..
         
     - name: Upload artifact
