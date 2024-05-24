@@ -33,8 +33,8 @@ jobs:
         pnpm build
         mkdir -p ../artifact
         rm -rf ../server/router/frontend/dist
-        mkdir -p ../server/router/frontend/dist
-        mv -f dist ../server/router/frontend/dist
+        mkdir -p ../server/router/frontend
+        cp -R dist ../server/router/frontend/dist
         cd ../..
 
     - name: Build binary
