@@ -32,7 +32,6 @@ jobs:
         corepack enable && pnpm i --frozen-lockfile
         pnpm build
         mkdir -p ../artifact
-        cp -R dist ../artifact/dist
         rm -rf ../server/router/frontend/dist
         mkdir -p ../server/router/frontend/dist
         mv -f dist ../server/router/frontend/dist
@@ -41,9 +40,7 @@ jobs:
     - name: Build binary
       run: |
         cd memos
-        GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o memos ./bin/memos/main.go && rm -f artifact/memos && cp memos artifact/memos && cd artifact && tar -czvf ../memos-linux-amd64.tar.gz * && cd ..
-        GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o memos ./bin/memos/main.go && rm -f artifact/memos && cp memos artifact/memos && cd artifact && tar -czvf ../memos-windows-amd64.tar.gz * && cd ..
-        GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -o memos ./bin/memos/main.go && rm -f artifact/memos && cp memos artifact/memos && cd artifact && tar -czvf ../memos-darwin-amd64.tar.gz * && cd ..
+        GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o memos.exe ./bin/memos/main.go && rm -f artifact/memos && cp memos artifact/memos && cd artifact && tar -czvf ../memos-windows-amd64.tar.gz * && cd ..
         GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go build -o memos ./bin/memos/main.go && rm -f artifact/memos && cp memos artifact/memos && cd artifact && tar -czvf ../memos-freebsd-amd64.tar.gz * && cd ..
         cd ..
         
@@ -52,9 +49,7 @@ jobs:
       with:
         name: memos-pre-built
         path: |
-            memos/memos-linux-amd64.tar.gz
             memos/memos-windows-amd64.tar.gz
-            memos/memos-darwin-amd64.tar.gz
             memos/memos-freebsd-amd64.tar.gz
             
     - name: Generate release tag
@@ -68,9 +63,7 @@ jobs:
       with:
         tag_name: ${{ steps.tag.outputs.release_tag }}
         files: |
-            memos/memos-linux-amd64.tar.gz
             memos/memos-windows-amd64.tar.gz
-            memos/memos-darwin-amd64.tar.gz
             memos/memos-freebsd-amd64.tar.gz
               
     - name: Delete workflow runs
