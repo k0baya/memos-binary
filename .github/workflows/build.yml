@@ -42,6 +42,8 @@ jobs:
         cd memos
         GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o memos ./bin/memos/main.go && rm -f artifact/* && cp memos artifact/memos.exe && cd artifact && tar -czvf ../memos-windows-amd64.tar.gz * && cd ..
         GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go build -o memos ./bin/memos/main.go && rm -f artifact/* && cp memos artifact/memos && cd artifact && tar -czvf ../memos-freebsd-amd64.tar.gz * && cd ..
+        GOOS=drawin GOARCH=amd64 CGO_ENABLED=0 go build -o memos ./bin/memos/main.go && rm -f artifact/* && cp memos artifact/memos && cd artifact && tar -czvf ../memos-drawin-amd64.tar.gz * && cd ..
+        GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o memos ./bin/memos/main.go && rm -f artifact/* && cp memos artifact/memos && cd artifact && tar -czvf ../memos-linux-amd64.tar.gz * && cd ..
         cd ..
         
     - name: Upload artifact
@@ -51,6 +53,8 @@ jobs:
         path: |
             memos/memos-windows-amd64.tar.gz
             memos/memos-freebsd-amd64.tar.gz
+            memos/memos-drawin-amd64.tar.gz
+            memos/memos-linux-amd64.tar.gz
             
     - name: Generate release tag
       id: tag
@@ -65,7 +69,8 @@ jobs:
         files: |
             memos/memos-windows-amd64.tar.gz
             memos/memos-freebsd-amd64.tar.gz
-              
+            memos/memos-drawin-amd64.tar.gz
+            memos/memos-linux-amd64.tar.gz
     - name: Delete workflow runs
       uses: Mattraks/delete-workflow-runs@v2
       with:
