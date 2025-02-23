@@ -29,8 +29,9 @@ jobs:
     - name: Build Frontend
       run: |
         cd memos/web
-        export COREPACK_SKIP_SIGNATURES=true
-        corepack enable && export COREPACK_SKIP_SIGNATURES=true && pnpm i --frozen-lockfile
+        # export COREPACK_SKIP_SIGNATURES=true
+        # corepack enable && export COREPACK_SKIP_SIGNATURES=true && pnpm i --frozen-lockfile
+        pnpm i --frozen-lockfile
         pnpm build
         mkdir -p ../artifact
         rm -rf ../server/router/frontend/dist
