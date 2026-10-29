@@ -2,6 +2,7 @@
 """Exercise the packaged binary, SQLite and embedded assets from an empty cwd."""
 
 import argparse
+from contextlib import closing
 from html.parser import HTMLParser
 from pathlib import Path
 import socket
@@ -95,14 +96,14 @@ def smoke(binary, expected_version=None):
             databases = list(data.glob("*.db"))
             if len(databases) != 1:
                 raise AssertionError(f"Expected one SQLite database, found {databases}")
-            with sqlite3.connect(databases[0]) as connection:
+            with closing(sqlite3.connect(databases[0])) as connection, connection:
                 tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 if "memo" not in tables:
                     raise AssertionError("SQLite schema was not initialized")
                 connection.execute("CREATE TABLE binary_release_smoke (value TEXT)")
                 connection.execute("INSERT INTO binary_release_smoke VALUES ('persistent')")
             run_once()
-            with sqlite3.connect(databases[0]) as connection:
+            with closing(sqlite3.connect(databases[0])) as connection:
                 assert connection.execute("SELECT value FROM binary_release_smoke").fetchone() == ("persistent",)
                 assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
             if expected_version and expected_version.removeprefix("v") not in log.read_text(encoding="utf-8", errors="replace"):
