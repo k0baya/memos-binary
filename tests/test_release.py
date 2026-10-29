@@ -1,7 +1,9 @@
 import hashlib
 import json
+import os
 from pathlib import Path
 import tempfile
+import struct
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -131,8 +133,9 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             release.frontend_files(directory)
 
+    @patch("scripts.release.audit_binary")
     @patch("scripts.release.subprocess.run")
-    def test_armv7_build_uses_real_sqlite_no_cgo_and_package_entry_point(self, run):
+    def test_armv7_build_uses_real_sqlite_no_cgo_and_package_entry_point(self, run, _audit):
         self.source_fixture()
         version = self.source / "internal/version"
         version.mkdir(parents=True)
@@ -168,11 +171,13 @@ class ReleaseTests(unittest.TestCase):
         release.checksums(self.dist)
         self.assertTrue(release.expected_assets().issubset({p.name for p in self.dist.iterdir()}))
         metadata = json.loads((self.dist / "build-info.json").read_text())
-        self.assertEqual(len(metadata), 9)
+        self.assertEqual(len(metadata), len(release.TARGETS))
         for row in metadata:
             self.assertEqual(row["frontend_files"], 3)
-            self.assertFalse(row["cgo_enabled"])
+            self.assertEqual(row["cgo_enabled"], row["target"].startswith("android-"))
             self.assertEqual(set(row["frontend_assets"]), {"assets/app.js", "assets/app.css"})
+            if row["target"].startswith("android-"):
+                self.assertFalse(row["android_arm64_device_verified"])
         for line in (self.dist / "checksums.txt").read_text().splitlines():
             checksum, name = line.split("  ")
             self.assertEqual(checksum, hashlib.sha256((self.dist / name).read_bytes()).hexdigest())
@@ -246,6 +251,78 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "Executable does not match"):
             smoke(binary)
         execute.assert_not_called()
+
+    def elf_fixture(self, libraries=("libc.so",), alignment=16384, machine=183):
+        data = bytearray(1024)
+        data[:6] = b"\x7fELF\x02\x01"
+        struct.pack_into("<HH", data, 16, 3, machine)
+        struct.pack_into("<Q", data, 32, 64)
+        struct.pack_into("<HH", data, 54, 56, 3)
+        interpreter = b"/system/bin/linker64\0"
+        data[384:384 + len(interpreter)] = interpreter
+        strings = b"\0"
+        entries = [(5, 0x10300)]
+        for name in libraries:
+            entries.append((1, len(strings)))
+            strings += name.encode() + b"\0"
+        entries.append((0, 0))
+        data[768:768 + len(strings)] = strings
+        for i, entry in enumerate(entries):
+            struct.pack_into("<qQ", data, 512 + i * 16, *entry)
+        for i, header in enumerate((
+            (1, 5, 0, 0x10000, 0x10000, len(data), len(data), alignment),
+            (3, 4, 384, 0x10180, 0, len(interpreter), len(interpreter), 1),
+            (2, 4, 512, 0x10200, 0, len(entries) * 16, len(entries) * 16, 8),
+        )):
+            struct.pack_into("<IIQQQQQQ", data, 64 + i * 56, *header)
+        binary = self.root / "elf"
+        binary.write_bytes(data)
+        return binary
+
+    def test_android_elf_only_needs_builtin_bionic_libraries(self):
+        release.audit_binary(self.elf_fixture(("libc.so", "libdl.so", "liblog.so")), "android-arm64")
+
+    def test_android_elf_rejects_non_system_runtime(self):
+        with self.assertRaisesRegex(ValueError, "non-system Android dependency"):
+            release.audit_binary(self.elf_fixture(("libc.so", "libc++_shared.so")), "android-arm64")
+
+    def test_android_elf_rejects_4k_only_alignment(self):
+        with self.assertRaisesRegex(ValueError, "16 KiB"):
+            release.audit_binary(self.elf_fixture(alignment=4096), "android-arm64")
+
+    def test_android_elf_rejects_wrong_cpu(self):
+        with self.assertRaisesRegex(ValueError, "correct architecture"):
+            release.audit_binary(self.elf_fixture(machine=62), "android-arm64")
+
+    def test_linux_elf_rejects_a_dynamic_loader(self):
+        with self.assertRaisesRegex(ValueError, "not static"):
+            release.audit_binary(self.elf_fixture(), "linux-arm64")
+
+    def test_static_32bit_arm_elf_is_supported(self):
+        data = bytearray(256)
+        data[:6] = b"\x7fELF\x01\x01"
+        struct.pack_into("<I", data, 28, 52)
+        struct.pack_into("<HH", data, 42, 32, 1)
+        struct.pack_into("<IIIIIIII", data, 52, 1, 0, 0x10000, 0x10000, 256, 256, 5, 4096)
+        binary = self.root / "armv7"
+        binary.write_bytes(data)
+        release.audit_binary(binary, "linux-armv7")
+
+    @patch.dict(os.environ, {"CC": "/ndk/bin/aarch64-linux-android26-clang"})
+    @patch("scripts.release.audit_binary")
+    @patch("scripts.release.subprocess.run")
+    def test_android_build_uses_system_dns_and_16k_pie(self, run, _audit):
+        self.source_fixture()
+        version = self.source / "internal/version"
+        version.mkdir(parents=True)
+        (version / "version.go").write_text('var Version = "dev"\n')
+        release.build(self.source, "android-arm64", "v0.31.0", self.sha, self.root / "binary")
+        args, kwargs = run.call_args
+        self.assertEqual(kwargs["env"]["CGO_ENABLED"], "1")
+        self.assertEqual(kwargs["env"]["GOOS"], "android")
+        self.assertIn("-tags=netcgo", args[0])
+        self.assertIn("-buildmode=pie", args[0])
+        self.assertIn("max-page-size=16384", " ".join(args[0]))
 
 
 if __name__ == "__main__":

@@ -13,10 +13,11 @@ Download from [Releases](https://github.com/k0baya/memos-binary/releases). This 
 | FreeBSD | amd64, arm64 | `memos-freebsd-<arch>.tar.gz` |
 | macOS | amd64 (Intel), arm64 (Apple Silicon) | `memos-darwin-<arch>.tar.gz` |
 | Windows | amd64, arm64 | `memos-windows-<arch>.zip`, plus legacy `.tar.gz` |
+| Android 8.0+ (API 26+) | arm64 (device verification pending), amd64 (x86_64 emulator) | `memos-android-<arch>.tar.gz` |
 
-Each release has 14 archives, `checksums.txt`, and `build-info.json`. Each archive contains the executable, upstream `LICENSE`, and `BUILD-INFO.json` identifying the upstream commit, Go toolchain, target, executable hash, and frontend digest. Existing amd64 `.tar.gz` names are retained for compatibility.
+Each complete release has 16 archives, `checksums.txt`, and `build-info.json`. Each archive contains the executable, upstream `LICENSE`, and `BUILD-INFO.json` identifying the upstream commit, Go toolchain, target, executable hash, and frontend digest. Existing amd64 `.tar.gz` names are retained for compatibility.
 
-**musl details:** supported upstream versions use the pure-Go `modernc.org/sqlite` driver. All packages use `CGO_ENABLED=0`; Linux executables have no dynamic ELF loader or shared-library dependency. The musl-labelled archives intentionally contain the **same static executable** as the corresponding Linux archive, not a different CGO/musl-linked build. They are tested in Alpine without glibc compatibility packages. Use these on Alpine/musl, or the regular Linux archives on glibc systems.
+**musl details:** supported upstream versions use the pure-Go `modernc.org/sqlite` driver. Desktop/server packages use `CGO_ENABLED=0`; Linux executables have no dynamic ELF loader or shared-library dependency. The musl-labelled archives intentionally contain the **same static executable** as the corresponding Linux archive, not a different CGO/musl-linked build. They are tested in Alpine without glibc compatibility packages. Use these on Alpine/musl, or the regular Linux archives on glibc systems. Android is a separate native build, described below.
 
 armv7 requires ARMv7 hardware and the OS support required by the upstream Go/SQLite versions. There are no unsupported 32-bit x86 builds or CGO-disabled SQLite stubs. Runtime minimum OS/kernel versions follow the Go version recorded in `BUILD-INFO.json`; a FreeBSD VM pass is not proof that a particular shared-hosting service permits execution.
 
@@ -60,6 +61,25 @@ pm2 save
 
 If direct startup fails, keep the complete error and `uname -srm` output. VM tests cannot reproduce serv00 account restrictions. Historical issue #4 was confirmed resolved by its reporter after an upgrade; no new unverified host-specific root cause is claimed here.
 
+## Android / Magisk integration
+
+Use `memos-android-arm64.tar.gz` for a **64-bit Android userspace**, not a Linux/musl archive renamed as Android. This is a command-line service binary, not an APK or a flashable Magisk module.
+
+Android builds use `GOOS=android`, NDK 27.3.13750724, API 26, `CGO_ENABLED=1`, and the `netcgo` resolver. Unlike the Linux static build, they intentionally use Android's system Bionic resolver so DNS and HTTPS work without `/etc/resolv.conf`, Termux, or hard-coded public DNS servers. SQLite itself remains the upstream pure-Go implementation.
+
+The ELF audit requires native PIE, `/system/bin/linker64`, and only Android's built-in `libc.so`, `libdl.so`, `liblog.so`, or `libm.so`. A glibc, musl, `libc++_shared.so`, or other non-system runtime dependency fails the build. **Do not bundle/replace Android's Bionic libraries or linker.** ELF load segments are aligned for 16 KiB pages; this is an alignment check, not a claim of physical 16 KiB-device testing.
+
+CI runs the x86_64 Android package in Android API 26 and 35 emulators, checking the actual executable, all frontend assets, SQLite restart persistence, system DNS, and HTTPS using Android's CA store. **ARM64 is cross-compiled and ELF-audited but has not been tested on a physical Android/Magisk device.** `BUILD-INFO.json` records this limitation. OEM SELinux policies, root manager behavior, and device-specific kernels can still differ.
+
+For integration into an existing Magisk module:
+
+1. Extract the Android ARM64 executable to your module's `bin/memos`.
+2. Copy `examples/magisk/service.sh` to the module root, and have your normal module installer set both files to mode `0755` (for example, `set_perm "$MODPATH/bin/memos" 0 0 0755`).
+3. The sample uses Magisk's BusyBox shell in **late_start service mode**, not the boot-blocking `post-fs-data` stage. It waits for boot, uses a startup lock, avoids duplicate processes, and binds only to `127.0.0.1:5230`.
+4. Data and logs live in `/data/adb/memos`, outside the module directory, with a private umask. Module updates/uninstalls must not delete that directory automatically. Configure log rotation for long-term use.
+
+Check `getprop ro.product.cpu.abilist64`, `/system/bin/linker64`, and `getprop ro.build.version.sdk` before trying the ARM64 package. Initialize the owner account manually before enabling unattended startup: other Android apps may also reach loopback, so localhost is not an authentication boundary. This example does **not** disable SELinux, add blanket policy rules, mount system libraries, or download executable code at boot. If execution is denied, collect the actual loader/startup/AVC error rather than setting SELinux permissive.
+
 ## Build or backfill another upstream version
 
 In **Actions → Build → Run workflow**:
@@ -80,6 +100,7 @@ Publication is gated on:
 * Native Linux amd64/arm64, Windows amd64/arm64, and macOS Intel/Apple Silicon startup tests.
 * Alpine/musl startup tests on amd64/arm64 and emulated armv7, plus static ELF dependency checks.
 * FreeBSD 14.4 amd64/arm64 VM startup tests.
+* Native Android x86_64 package tests in API 26/35 emulators, including Bionic DNS/HTTPS; ARM64 compilation/ELF checks, with physical-device verification explicitly pending.
 * Each test starts the **extracted package from an empty working directory**, fetches the HTML and a SPA route, verifies every packaged `assets/` file against its SHA-256 hash (including lazy chunks, fonts and images), initializes SQLite, restarts, and verifies persistence and database integrity. No external frontend folder is available to mask missing embedded assets.
 * A complete archive set with consistent source/frontend provenance and SHA-256 checksums.
 

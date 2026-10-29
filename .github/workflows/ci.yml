@@ -18,9 +18,11 @@ jobs:
       - run: python -m unittest discover -s tests -v
       - run: python -m compileall -q scripts tests
       - run: node --check examples/ecosystem.config.cjs
+      - run: sh -n examples/magisk/service.sh
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.26.4'
           cache: false
       - name: Lint workflows
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck=''
+      - run: go vet scripts/android-probe.go

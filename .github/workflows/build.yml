@@ -97,7 +97,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [linux-amd64, linux-arm64, linux-armv7, freebsd-amd64, freebsd-arm64, darwin-amd64, darwin-arm64, windows-amd64, windows-arm64]
+        target: [linux-amd64, linux-arm64, linux-armv7, freebsd-amd64, freebsd-arm64, darwin-amd64, darwin-arm64, windows-amd64, windows-arm64, android-arm64, android-amd64]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -116,7 +116,17 @@ jobs:
         with:
           name: frontend-dist
           path: upstream/${{ needs.frontend.outputs.frontend }}
-      - name: Build and package static binary with frontend
+      - name: Set up the Android NDK system-Bionic toolchain
+        if: startsWith(matrix.target, 'android-')
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          ndk="$ANDROID_HOME/ndk/27.3.13750724"
+          if [[ ! -d "$ndk" ]]; then sdkmanager 'ndk;27.3.13750724'; fi
+          compiler=aarch64-linux-android26-clang
+          if [[ "$TARGET" == android-amd64 ]]; then compiler=x86_64-linux-android26-clang; fi
+          echo "CC=$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/$compiler" >> "$GITHUB_ENV"
+      - name: Build and package native binary with embedded frontend
         env:
           TARGET: ${{ matrix.target }}
           TAG: ${{ needs.frontend.outputs.tag }}
@@ -124,6 +134,12 @@ jobs:
         run: |
           python scripts/release.py build --target "$TARGET" --tag "$TAG" --sha "$SHA"
           python scripts/release.py package --target "$TARGET" --tag "$TAG" --sha "$SHA"
+          if [[ "$TARGET" == android-amd64 ]]; then
+            cd upstream
+            GOOS=android GOARCH=amd64 CGO_ENABLED=1 go build -trimpath -tags=netcgo -buildmode=pie \
+              -ldflags='-linkmode=external -extldflags=-Wl,-z,max-page-size=16384' \
+              -o ../dist/android-dns-probe ../scripts/android-probe.go
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: packages-${{ matrix.target }}
@@ -245,9 +261,42 @@ jobs:
           prepare: pkg install -y python311 py311-sqlite3
           run: python3.11 scripts/smoke.py extracted/memos --version "$TAG"
 
+  android-smoke:
+    name: Android API ${{ matrix.api }} emulator (x86_64)
+    needs: [frontend, binaries]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [26, 35]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: packages-android-amd64
+          path: dist
+      - name: Extract the native Android package
+        run: mkdir extracted && tar -xzf dist/memos-android-amd64.tar.gz -C extracted
+      - name: Enable KVM for the disposable emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm-memos.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Verify Bionic DNS/HTTPS, SQLite and the complete frontend on Android
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
+        with:
+          api-level: ${{ matrix.api }}
+          target: google_apis
+          arch: x86_64
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: python -m scripts.android_smoke extracted dist/android-dns-probe
+
   release:
     name: Collect verified packages and optionally publish
-    needs: [frontend, binaries, native-smoke, musl-smoke, freebsd-smoke]
+    needs: [frontend, binaries, native-smoke, musl-smoke, freebsd-smoke, android-smoke]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

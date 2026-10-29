@@ -30,6 +30,29 @@ class Assets(HTMLParser):
             self.paths.add(value)
 
 
+def verify_frontend(http, base, index, metadata):
+    if "<html" not in index.lower() or "No embeddable frontend" in index or "/src/" in index:
+        raise AssertionError("Missing production frontend")
+    parser = Assets()
+    parser.feed(index)
+    for suffix in (".js", ".css"):
+        if not any(urlparse(path).path.endswith(suffix) for path in parser.paths):
+            raise AssertionError(f"No embedded {suffix} asset in index.html")
+    asset_hashes = {"/" + name: digest for name, digest in metadata.get("frontend_assets", {}).items()}
+    for path in sorted(parser.paths | asset_hashes.keys()):
+        with http.open(urljoin(base + "/", path), timeout=30) as response:
+            body = response.read()
+            mime = response.headers.get("Content-Type", "")
+        if not body or "text/html" in mime or body.lstrip().lower().startswith(b"<!doctype html"):
+            raise AssertionError(f"Missing embedded asset (SPA fallback): {path}")
+        if path in asset_hashes and hashlib.sha256(body).hexdigest() != asset_hashes[path]:
+            raise AssertionError(f"Embedded asset hash mismatch: {path}")
+    with http.open(base + "/auth", timeout=10) as response:
+        if "<html" not in response.read().decode("utf-8").lower():
+            raise AssertionError("SPA fallback failed")
+    print(f"Embedded frontend and {len(parser.paths | asset_hashes.keys())} assets OK", flush=True)
+
+
 def smoke(binary, expected_version=None):
     binary = binary.resolve()
     metadata_path = binary.parent / "BUILD-INFO.json"
@@ -72,25 +95,7 @@ def smoke(binary, expected_version=None):
                             if time.monotonic() >= deadline:
                                 raise AssertionError("Timed out waiting for the frontend")
                             time.sleep(1)
-                    parser = Assets()
-                    parser.feed(index)
-                    for suffix in (".js", ".css"):
-                        if not any(urlparse(path).path.endswith(suffix) for path in parser.paths):
-                            raise AssertionError(f"No embedded {suffix} asset in index.html")
-                    asset_hashes = {"/" + name: digest for name, digest in metadata.get("frontend_assets", {}).items()}
-                    for path in sorted(parser.paths | asset_hashes.keys()):
-                        with http.open(urljoin(base + "/", path), timeout=30) as response:
-                            body = response.read()
-                            mime = response.headers.get("Content-Type", "")
-                        if not body or "text/html" in mime or body.lstrip().lower().startswith(b"<!doctype html"):
-                            raise AssertionError(f"Missing embedded asset (SPA fallback): {path}")
-                        if path in asset_hashes and hashlib.sha256(body).hexdigest() != asset_hashes[path]:
-                            raise AssertionError(f"Embedded asset hash mismatch: {path}")
-                    # A real SPA route must also work without a web/dist folder beside the executable.
-                    with http.open(base + "/auth", timeout=10) as response:
-                        if "<html" not in response.read().decode("utf-8").lower():
-                            raise AssertionError("SPA fallback failed")
-                    print(f"Embedded frontend and {len(parser.paths | asset_hashes.keys())} assets OK", flush=True)
+                    verify_frontend(http, base, index, metadata)
                 finally:
                     if process.poll() is None:
                         process.terminate()

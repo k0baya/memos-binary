@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 import tarfile
 from urllib.error import HTTPError
@@ -22,6 +23,7 @@ TARGETS = (
     "linux-amd64", "linux-arm64", "linux-armv7",
     "freebsd-amd64", "freebsd-arm64",
     "darwin-amd64", "darwin-arm64", "windows-amd64", "windows-arm64",
+    "android-arm64", "android-amd64",
 )
 FRONTENDS = ("server/frontend/dist", "server/router/frontend/dist")
 
@@ -115,6 +117,57 @@ def frontend_files(directory):
     return files
 
 
+def audit_binary(binary, target):
+    if not target.startswith(("linux-", "android-")):
+        return
+    data = binary.read_bytes()
+    if data[:4] != b"\x7fELF" or data[5] != 1:
+        raise ValueError("Expected a little-endian ELF executable")
+    bits = data[4]
+    if bits == 2:
+        offset = struct.unpack_from("<Q", data, 32)[0]
+        size, count = struct.unpack_from("<HH", data, 54)
+        headers = [struct.unpack_from("<IIQQQQQQ", data, offset + i * size) for i in range(count)]
+        segments = [(t, o, a, f, al) for t, _, o, a, _, f, _, al in headers]
+        dynamic_format, dynamic_size = "<qQ", 16
+    elif bits == 1:
+        offset = struct.unpack_from("<I", data, 28)[0]
+        size, count = struct.unpack_from("<HH", data, 42)
+        headers = [struct.unpack_from("<IIIIIIII", data, offset + i * size) for i in range(count)]
+        segments = [(t, o, a, f, al) for t, o, a, _, f, _, _, al in headers]
+        dynamic_format, dynamic_size = "<iI", 8
+    else:
+        raise ValueError("Unsupported ELF class")
+    interpreter = None
+    needed = []
+    for kind, offset, _, length, _ in segments:
+        if kind == 3:
+            interpreter = data[offset:offset + length].rstrip(b"\0").decode("ascii")
+        if kind == 2:
+            entries = [struct.unpack_from(dynamic_format, data, i)
+                       for i in range(offset, offset + length, dynamic_size)]
+            address = next((value for tag, value in entries if tag == 5), None)
+            if address is not None:
+                strings = next(o + address - a for t, o, a, n, _ in segments if t == 1 and a <= address < a + n)
+                needed.extend(data[strings + value:data.index(b"\0", strings + value)].decode("ascii")
+                              for tag, value in entries if tag == 1)
+    if target.startswith("linux-"):
+        if interpreter or needed:
+            raise ValueError(f"Linux binary is not static: interpreter={interpreter}, libraries={needed}")
+    else:
+        machine = struct.unpack_from("<H", data, 18)[0]
+        expected_machine = 183 if target == "android-arm64" else 62
+        if bits != 2 or machine != expected_machine or struct.unpack_from("<H", data, 16)[0] != 3:
+            raise ValueError("Android binary must be a native 64-bit PIE of the correct architecture")
+        if interpreter != "/system/bin/linker64" or "libc.so" not in needed:
+            raise ValueError("Android build must use the system Bionic loader and libc for system DNS")
+        if set(needed) - {"libc.so", "libdl.so", "liblog.so", "libm.so"}:
+            raise ValueError(f"Unexpected non-system Android dependency: {needed}")
+        if any(alignment < 16384 for kind, _, _, _, alignment in segments if kind == 1):
+            raise ValueError("Android ELF load segments must support 16 KiB pages")
+    print(f"ELF audit {target}: interpreter={interpreter}, needed={needed}")
+
+
 def build(source, target, tag, sha, destination):
     if target not in TARGETS:
         raise ValueError(f"Unsupported target: {target}")
@@ -123,15 +176,26 @@ def build(source, target, tag, sha, destination):
     goos, arch = target.split("-")
     env = dict(os.environ, GOOS=goos, GOARCH="arm" if arch == "armv7" else arch,
                CGO_ENABLED="0", GOARM="7" if arch == "armv7" else "")
+    tags = "netgo,osusergo"
+    build_flags = []
+    if goos == "android":
+        if not env.get("CC"):
+            raise ValueError("Android needs an NDK API 26+ compiler in CC for the Bionic system DNS resolver")
+        env["CGO_ENABLED"] = "1"
+        tags = "netcgo"
+        build_flags = ["-buildmode=pie"]
     flags = ["-s", "-w", f"-X=github.com/usememos/memos/internal/version.Version={valid_tag(tag).removeprefix('v')}"]
+    if goos == "android":
+        flags += ["-linkmode=external", "-extldflags=-Wl,-z,max-page-size=16384"]
     version_source = (source / "internal/version/version.go").read_text(encoding="utf-8")
     for symbol, value in (("Commit", sha), ("DevVersion", tag.removeprefix("v"))):
         if re.search(r"\bvar\s+" + symbol + r"\b", version_source):
             flags.append(f"-X=github.com/usememos/memos/internal/version.{symbol}={value}")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["go", "build", "-mod=readonly", "-trimpath", "-buildvcs=false", "-tags=netgo,osusergo",
+    subprocess.run(["go", "build", *build_flags, "-mod=readonly", "-trimpath", "-buildvcs=false", "-tags=" + tags,
                     "-ldflags=" + " ".join(flags), "-o", str(destination.resolve()), "./cmd/memos"],
                    cwd=source, env=env, check=True)
+    audit_binary(destination, target)
 
 
 def package_names(target):
@@ -153,12 +217,16 @@ def package(source, target, binary, destination, tag, sha):
     destination.mkdir(parents=True, exist_ok=True)
     files = frontend_files(source / inspect_source(source)["frontend"])
     metadata = {"schema": 1, "upstream": UPSTREAM, "tag": valid_tag(tag), "commit": sha,
-                "target": target, "cgo_enabled": False, "frontend_files": len(files),
+                "target": target, "cgo_enabled": target.startswith("android-"), "frontend_files": len(files),
                 "frontend_sha256": hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest(),
                 "frontend_assets": {name: digest for name, digest in files.items() if name.startswith("assets/")},
                 "go": subprocess.check_output(["go", "version"], cwd=source, text=True).strip(),
                 "build_url": f"https://github.com/{os.environ.get('GITHUB_REPOSITORY', 'k0baya/memos-binary')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}",
                 "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest()}
+    if target.startswith("android-"):
+        metadata.update(android_api=26, android_runtime="system Bionic; not musl/glibc",
+                        android_arm64_device_verified=False,
+                        android_runtime_test="x86_64 emulator; ARM64 physical device verification pending")
     staging = destination / target
     staging.mkdir(exist_ok=True)
     executable = staging / ("memos.exe" if target.startswith("windows-") else "memos")
