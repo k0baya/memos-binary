@@ -3,7 +3,9 @@
 
 import argparse
 from contextlib import closing
+import hashlib
 from html.parser import HTMLParser
+import json
 from pathlib import Path
 import socket
 import sqlite3
@@ -30,6 +32,10 @@ class Assets(HTMLParser):
 
 def smoke(binary, expected_version=None):
     binary = binary.resolve()
+    metadata_path = binary.parent / "BUILD-INFO.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {}
+    if metadata and hashlib.sha256(binary.read_bytes()).hexdigest() != metadata["binary_sha256"]:
+        raise AssertionError("Executable does not match package provenance")
     help_text = subprocess.check_output([str(binary), "--help"], text=True, timeout=60)
     http = build_opener(ProxyHandler({}))
     with tempfile.TemporaryDirectory(prefix="memos-smoke-") as temporary:
@@ -71,17 +77,20 @@ def smoke(binary, expected_version=None):
                     for suffix in (".js", ".css"):
                         if not any(urlparse(path).path.endswith(suffix) for path in parser.paths):
                             raise AssertionError(f"No embedded {suffix} asset in index.html")
-                    for path in sorted(parser.paths):
+                    asset_hashes = {"/" + name: digest for name, digest in metadata.get("frontend_assets", {}).items()}
+                    for path in sorted(parser.paths | asset_hashes.keys()):
                         with http.open(urljoin(base + "/", path), timeout=30) as response:
                             body = response.read()
                             mime = response.headers.get("Content-Type", "")
                         if not body or "text/html" in mime or body.lstrip().lower().startswith(b"<!doctype html"):
                             raise AssertionError(f"Missing embedded asset (SPA fallback): {path}")
+                        if path in asset_hashes and hashlib.sha256(body).hexdigest() != asset_hashes[path]:
+                            raise AssertionError(f"Embedded asset hash mismatch: {path}")
                     # A real SPA route must also work without a web/dist folder beside the executable.
                     with http.open(base + "/auth", timeout=10) as response:
                         if "<html" not in response.read().decode("utf-8").lower():
                             raise AssertionError("SPA fallback failed")
-                    print(f"Embedded frontend and {len(parser.paths)} JS/CSS assets OK", flush=True)
+                    print(f"Embedded frontend and {len(parser.paths | asset_hashes.keys())} assets OK", flush=True)
                 finally:
                     if process.poll() is None:
                         process.terminate()
@@ -104,8 +113,10 @@ def smoke(binary, expected_version=None):
                 connection.execute("INSERT INTO binary_release_smoke VALUES ('persistent')")
             run_once()
             with closing(sqlite3.connect(databases[0])) as connection:
-                assert connection.execute("SELECT value FROM binary_release_smoke").fetchone() == ("persistent",)
-                assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+                if connection.execute("SELECT value FROM binary_release_smoke").fetchone() != ("persistent",):
+                    raise AssertionError("SQLite data did not persist across restart")
+                if connection.execute("PRAGMA integrity_check").fetchone() != ("ok",):
+                    raise AssertionError("SQLite integrity check failed")
             if expected_version and expected_version.removeprefix("v") not in log.read_text(encoding="utf-8", errors="replace"):
                 raise AssertionError("Startup log does not identify the expected version")
             print("SQLite initialization, restart persistence and integrity OK", flush=True)

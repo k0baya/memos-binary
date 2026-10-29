@@ -129,7 +129,7 @@ def build(source, target, tag, sha, destination):
         if re.search(r"\bvar\s+" + symbol + r"\b", version_source):
             flags.append(f"-X=github.com/usememos/memos/internal/version.{symbol}={value}")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["go", "build", "-trimpath", "-buildvcs=false", "-tags=netgo,osusergo",
+    subprocess.run(["go", "build", "-mod=readonly", "-trimpath", "-buildvcs=false", "-tags=netgo,osusergo",
                     "-ldflags=" + " ".join(flags), "-o", str(destination.resolve()), "./cmd/memos"],
                    cwd=source, env=env, check=True)
 
@@ -155,6 +155,7 @@ def package(source, target, binary, destination, tag, sha):
     metadata = {"schema": 1, "upstream": UPSTREAM, "tag": valid_tag(tag), "commit": sha,
                 "target": target, "cgo_enabled": False, "frontend_files": len(files),
                 "frontend_sha256": hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest(),
+                "frontend_assets": {name: digest for name, digest in files.items() if name.startswith("assets/")},
                 "go": subprocess.check_output(["go", "version"], cwd=source, text=True).strip(),
                 "build_url": f"https://github.com/{os.environ.get('GITHUB_REPOSITORY', 'k0baya/memos-binary')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}",
                 "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest()}
@@ -204,23 +205,30 @@ def check_update(repository):
     info = resolve("latest")
     release = optional_release(repository, info["tag"])
     names = {a["name"] for a in release["assets"]} if release else set()
-    outputs({"tag": info["tag"], "needed": not expected_assets().issubset(names)})
+    outputs({"tag": info["tag"], "needed": not release or release.get("draft", False)
+             or not expected_assets().issubset(names)})
 
 
 def publish(repository, directory, tag, commit, prerelease, latest):
     # Only the release job has a write token. No token is passed to upstream build scripts.
     release = optional_release(repository, tag)
     if release is None:
-        api(f"/repos/{repository}/releases", data={
+        release = api(f"/repos/{repository}/releases", data={
             "tag_name": valid_tag(tag), "target_commitish": commit, "name": tag,
+            "draft": True,
             "prerelease": prerelease, "make_latest": "true" if latest else "false",
             "body": f"Memos [{tag}](https://github.com/{UPSTREAM}/releases/tag/{tag}) with the complete embedded frontend.\n\n"
                     "Linux packages are static pure-Go binaries; the musl-labelled packages contain the same executable, tested on Alpine. "
                     "Windows ZIPs and legacy tar.gz archives are both available.\n\n"
                     "See README for platform requirements and PM2/serv00 instructions. Check `checksums.txt` and `build-info.json` before installing. "
                     "Back up your database and follow upstream migration notes before upgrading."})
-    paths = [str(directory / name) for name in sorted(expected_assets())]
+    # Upload the checksum manifest last. New releases remain drafts until every upload succeeds.
+    paths = [str(directory / name) for name in sorted(expected_assets() - {"checksums.txt"})]
+    paths.append(str(directory / "checksums.txt"))
     subprocess.run(["gh", "release", "upload", tag, "--repo", repository, "--clobber", *paths], check=True)
+    if release["draft"]:
+        subprocess.run(["gh", "release", "edit", tag, "--repo", repository, "--draft=false",
+                        f"--prerelease={str(prerelease).lower()}", f"--latest={str(latest).lower()}"], check=True)
 
 
 def main():

@@ -80,7 +80,7 @@ Publication is gated on:
 * Native Linux amd64/arm64, Windows amd64/arm64, and macOS Intel/Apple Silicon startup tests.
 * Alpine/musl startup tests on amd64/arm64 and emulated armv7, plus static ELF dependency checks.
 * FreeBSD 14.4 amd64/arm64 VM startup tests.
-* Each test starts the **extracted package from an empty working directory**, fetches the HTML and its JS/CSS assets and a SPA route, initializes SQLite, restarts, and verifies persistence and database integrity. No external frontend folder is available to mask missing embedded assets.
+* Each test starts the **extracted package from an empty working directory**, fetches the HTML and a SPA route, verifies every packaged `assets/` file against its SHA-256 hash (including lazy chunks, fonts and images), initializes SQLite, restarts, and verifies persistence and database integrity. No external frontend folder is available to mask missing embedded assets.
 * A complete archive set with consistent source/frontend provenance and SHA-256 checksums.
 
 The SQLite restart check uses a disposable database; it is **not** an existing-user database migration test. Back up your complete data directory and follow upstream upgrade/migration instructions before changing versions. Do not downgrade a migrated database. macOS/Windows packages are not code-signed; apply your normal download verification and OS security procedures.

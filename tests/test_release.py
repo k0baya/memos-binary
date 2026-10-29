@@ -9,7 +9,7 @@ import tarfile
 import zipfile
 
 from scripts import release
-from scripts.smoke import Assets
+from scripts.smoke import Assets, smoke
 
 
 class ReleaseTests(unittest.TestCase):
@@ -172,6 +172,7 @@ class ReleaseTests(unittest.TestCase):
         for row in metadata:
             self.assertEqual(row["frontend_files"], 3)
             self.assertFalse(row["cgo_enabled"])
+            self.assertEqual(set(row["frontend_assets"]), {"assets/app.js", "assets/app.css"})
         for line in (self.dist / "checksums.txt").read_text().splitlines():
             checksum, name = line.split("  ")
             self.assertEqual(checksum, hashlib.sha256((self.dist / name).read_bytes()).hexdigest())
@@ -201,12 +202,24 @@ class ReleaseTests(unittest.TestCase):
                 self.assertEqual(output.call_args.args[0]["needed"], expected)
 
     @patch("scripts.release.subprocess.run")
-    @patch("scripts.release.api")
+    @patch("scripts.release.api", return_value={"draft": True})
     @patch("scripts.release.optional_release", return_value=None)
     def test_backfill_never_changes_latest_release(self, _existing, api, run):
         release.publish("custom/fork", self.dist, "v0.25.3", self.sha, False, False)
         self.assertEqual(api.call_args.kwargs["data"]["make_latest"], "false")
-        self.assertIn("--clobber", run.call_args.args[0])
+        self.assertTrue(api.call_args.kwargs["data"]["draft"])
+        self.assertIn("--clobber", run.call_args_list[0].args[0])
+        self.assertEqual(Path(run.call_args_list[0].args[0][-1]).name, "checksums.txt")
+        self.assertIn("--draft=false", run.call_args.args[0])
+        self.assertIn("--latest=false", run.call_args.args[0])
+
+    @patch("scripts.release.outputs")
+    @patch("scripts.release.optional_release")
+    @patch("scripts.release.resolve", return_value={"tag": "v0.31.0"})
+    def test_unpublished_draft_requires_retry_even_with_all_assets(self, _resolve, get_release, output):
+        get_release.return_value = {"draft": True, "assets": [{"name": name} for name in release.expected_assets()]}
+        release.check_update("custom/fork")
+        self.assertTrue(output.call_args.args[0]["needed"])
 
     def test_smoke_parser_rejects_remote_assets(self):
         with self.assertRaises(AssertionError):
@@ -216,6 +229,15 @@ class ReleaseTests(unittest.TestCase):
         parser = Assets()
         parser.feed('<script type="module" src="/assets/a.js"></script><link rel="stylesheet" href="/assets/a.css">')
         self.assertEqual(parser.paths, {"/assets/a.js", "/assets/a.css"})
+
+    @patch("scripts.smoke.subprocess.check_output")
+    def test_smoke_rejects_corrupt_executable_before_launch(self, execute):
+        binary = self.root / "memos"
+        binary.write_bytes(b"corrupt executable")
+        (self.root / "BUILD-INFO.json").write_text(json.dumps({"binary_sha256": "0" * 64}))
+        with self.assertRaisesRegex(AssertionError, "Executable does not match"):
+            smoke(binary)
+        execute.assert_not_called()
 
 
 if __name__ == "__main__":
