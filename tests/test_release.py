@@ -213,6 +213,14 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("--draft=false", run.call_args.args[0])
         self.assertIn("--latest=false", run.call_args.args[0])
 
+    @patch("scripts.release.subprocess.run")
+    @patch("scripts.release.api", return_value={"draft": True})
+    @patch("scripts.release.optional_release", return_value=None)
+    def test_stable_release_is_only_marked_latest_when_published(self, _existing, api, run):
+        release.publish("custom/fork", self.dist, "v0.31.0", self.sha, False, True)
+        self.assertEqual(api.call_args.kwargs["data"]["make_latest"], "false")
+        self.assertIn("--latest=true", run.call_args.args[0])
+
     @patch("scripts.release.outputs")
     @patch("scripts.release.optional_release")
     @patch("scripts.release.resolve", return_value={"tag": "v0.31.0"})

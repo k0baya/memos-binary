@@ -216,7 +216,7 @@ def publish(repository, directory, tag, commit, prerelease, latest):
         release = api(f"/repos/{repository}/releases", data={
             "tag_name": valid_tag(tag), "target_commitish": commit, "name": tag,
             "draft": True,
-            "prerelease": prerelease, "make_latest": "true" if latest else "false",
+            "prerelease": prerelease, "make_latest": "false",
             "body": f"Memos [{tag}](https://github.com/{UPSTREAM}/releases/tag/{tag}) with the complete embedded frontend.\n\n"
                     "Linux packages are static pure-Go binaries; the musl-labelled packages contain the same executable, tested on Alpine. "
                     "Windows ZIPs and legacy tar.gz archives are both available.\n\n"
