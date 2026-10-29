@@ -1,82 +1,302 @@
 name: Build
 
-on: workflow_dispatch
+on:
+  push:
+    branches: [main, 'codex/**']
+    paths: ['.github/workflows/build.yml', 'scripts/**', 'tests/**']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Published upstream tag (e.g. v0.31.0), or latest stable'
+        type: string
+        default: latest
+      publish:
+        description: 'Publish verified packages to Releases (main branch only)'
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        default: latest
+      publish:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ inputs.version || 'latest' }}-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    name: Build
+  frontend:
+    name: Resolve upstream and embed frontend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      tag: ${{ steps.upstream.outputs.tag }}
+      sha: ${{ steps.upstream.outputs.sha }}
+      prerelease: ${{ steps.upstream.outputs.prerelease }}
+      latest: ${{ steps.upstream.outputs.latest }}
+      frontend: ${{ steps.layout.outputs.frontend }}
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Test release tooling
+        run: python -m unittest discover -s tests -v
+      - name: Resolve one immutable upstream revision
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version || 'latest' }}
+        run: python scripts/release.py resolve --version "$VERSION"
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: usememos/memos
+          ref: ${{ steps.upstream.outputs.sha }}
+          path: upstream
+          persist-credentials: false
+      - name: Identify upstream package manager and embed path
+        id: layout
+        run: python scripts/release.py inspect
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: ${{ steps.layout.outputs.pnpm }}
+      - name: Build the complete upstream frontend
+        working-directory: upstream/web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm release
+      - name: Reject missing or placeholder frontend
+        env:
+          FRONTEND: ${{ steps.layout.outputs.frontend }}
+        run: python scripts/release.py frontend --directory "upstream/$FRONTEND"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: frontend-dist
+          path: upstream/${{ steps.layout.outputs.frontend }}/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
 
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: 'stable'
-        check-latest: true
+  binaries:
+    name: Build ${{ matrix.target }}
+    needs: frontend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [linux-amd64, linux-arm64, linux-armv7, freebsd-amd64, freebsd-arm64, darwin-amd64, darwin-arm64, windows-amd64, windows-arm64]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: usememos/memos
+          ref: ${{ needs.frontend.outputs.sha }}
+          path: upstream
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: upstream/go.mod
+          cache-dependency-path: upstream/go.sum
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: frontend-dist
+          path: upstream/${{ needs.frontend.outputs.frontend }}
+      - name: Build and package static binary with frontend
+        env:
+          TARGET: ${{ matrix.target }}
+          TAG: ${{ needs.frontend.outputs.tag }}
+          SHA: ${{ needs.frontend.outputs.sha }}
+        run: |
+          python scripts/release.py build --target "$TARGET" --tag "$TAG" --sha "$SHA"
+          python scripts/release.py package --target "$TARGET" --tag "$TAG" --sha "$SHA"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: packages-${{ matrix.target }}
+          path: dist/*
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
 
-    - name: Set up Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: 20
+  native-smoke:
+    name: Run ${{ matrix.target }}
+    needs: [frontend, binaries]
+    timeout-minutes: 15
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {target: linux-amd64, runner: ubuntu-24.04}
+          - {target: linux-arm64, runner: ubuntu-24.04-arm}
+          - {target: windows-amd64, runner: windows-2025}
+          - {target: windows-arm64, runner: windows-11-arm}
+          - {target: darwin-amd64, runner: macos-15-intel}
+          - {target: darwin-arm64, runner: macos-15}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: packages-${{ matrix.target }}
+          path: dist
+      - name: Verify the packaged executable, not the source tree
+        env:
+          TARGET: ${{ matrix.target }}
+          TAG: ${{ needs.frontend.outputs.tag }}
+        run: |
+          mkdir extracted
+          tar -xzf "dist/memos-$TARGET.tar.gz" -C extracted
+          binary=extracted/memos
+          if [[ "$TARGET" == windows-* ]]; then
+            python -m zipfile -e "dist/memos-$TARGET.zip" extracted
+            binary=extracted/memos.exe
+          fi
+          python scripts/smoke.py "$binary" --version "$TAG"
 
-    - name: Clone Repo
-      run: |
-        export LATEST_APP=$(wget -qO- https://api.github.com/repos/usememos/memos/tags | gawk -F '["v]' '/name/{print "v"$5;exit}')
-        git clone -b $LATEST_APP https://github.com/usememos/memos
-        npm install -g pnpm
+  musl-smoke:
+    name: Alpine/musl ${{ matrix.target }}
+    needs: [frontend, binaries]
+    timeout-minutes: 20
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {target: linux-amd64, runner: ubuntu-24.04, platform: linux/amd64}
+          - {target: linux-arm64, runner: ubuntu-24.04-arm, platform: linux/arm64}
+          - {target: linux-armv7, runner: ubuntu-24.04, platform: linux/arm/v7}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: packages-${{ matrix.target }}
+          path: dist
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        if: matrix.target == 'linux-armv7'
+        with:
+          platforms: arm
+      - name: Require a fully static executable and test in Alpine
+        env:
+          TARGET: ${{ matrix.target }}
+          PLATFORM: ${{ matrix.platform }}
+          TAG: ${{ needs.frontend.outputs.tag }}
+        run: |
+          mkdir extracted
+          tar -xzf "dist/memos-$TARGET-musl.tar.gz" -C extracted
+          readelf -l -d extracted/memos > elf.txt
+          if grep -q INTERP elf.txt; then
+            echo 'Unexpected dynamic ELF interpreter' >&2; exit 1
+          fi
+          if grep -q NEEDED elf.txt; then
+            echo 'Unexpected shared library dependency' >&2; exit 1
+          fi
+          docker run --rm --platform "$PLATFORM" -v "$PWD:/work:ro" -w /work \
+            python:3.13-alpine3.22 python scripts/smoke.py extracted/memos --version "$TAG"
 
-    - name: Build Frontend
-      run: |
-        cd memos/web
-        # export COREPACK_SKIP_SIGNATURES=true
-        # corepack enable && export COREPACK_SKIP_SIGNATURES=true && pnpm i --frozen-lockfile
-        pnpm i --frozen-lockfile
-        pnpm build
-        mkdir -p ../artifact
-        rm -rf ../server/router/frontend/dist
-        mkdir -p ../server/router/frontend
-        cp -R dist ../server/router/frontend/dist
-        cd ../..
+  freebsd-smoke:
+    name: FreeBSD ${{ matrix.target }}
+    needs: [frontend, binaries]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {target: freebsd-amd64, arch: x86_64}
+          - {target: freebsd-arm64, arch: aarch64}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: packages-${{ matrix.target }}
+          path: dist
+      - name: Extract package
+        env:
+          TARGET: ${{ matrix.target }}
+        run: mkdir extracted && tar -xzf "dist/memos-$TARGET.tar.gz" -C extracted
+      - name: Exercise SQLite and frontend on FreeBSD
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1
+        env:
+          TAG: ${{ needs.frontend.outputs.tag }}
+        with:
+          release: '14.4'
+          arch: ${{ matrix.arch }}
+          envs: TAG
+          prepare: pkg install -y python311 py311-sqlite3
+          run: python3.11 scripts/smoke.py extracted/memos --version "$TAG"
 
-    - name: Build binary
-      run: |
-        cd memos
-        GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o memos ./cmd/memos/main.go && rm -f artifact/* && cp memos artifact/memos.exe && cd artifact && tar -czvf ../memos-windows-amd64.tar.gz * && cd ..
-        GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go build -o memos ./cmd/memos/main.go && rm -f artifact/* && cp memos artifact/memos && cd artifact && tar -czvf ../memos-freebsd-amd64.tar.gz * && cd ..
-        GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -o memos ./cmd/memos/main.go && rm -f artifact/* && cp memos artifact/memos && cd artifact && tar -czvf ../memos-darwin-amd64.tar.gz * && cd ..
-        GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o memos ./cmd/memos/main.go && rm -f artifact/* && cp memos artifact/memos && cd artifact && tar -czvf ../memos-linux-amd64.tar.gz * && cd ..
-        cd ..
-        
-    - name: Upload artifact
-      uses: actions/upload-artifact@main
-      with:
-        name: memos-pre-built
-        path: |
-            memos/memos-windows-amd64.tar.gz
-            memos/memos-freebsd-amd64.tar.gz
-            memos/memos-darwin-amd64.tar.gz
-            memos/memos-linux-amd64.tar.gz
-            
-    - name: Generate release tag
-      id: tag
-      run: echo "release_tag=$(wget -qO- https://api.github.com/repos/usememos/memos/tags | gawk -F '["v]' '/name/{print "v"$5;exit}')" >> $GITHUB_OUTPUT
+  release:
+    name: Collect verified packages and optionally publish
+    needs: [frontend, binaries, native-smoke, musl-smoke, freebsd-smoke]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: dist
+      - name: Check release completeness and generate SHA-256 checksums
+        run: python scripts/release.py checksums
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: memos-pre-built-${{ needs.frontend.outputs.tag }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
+            dist/build-info.json
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
 
-    - name: Create release
-      uses: softprops/action-gh-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ steps.tag.outputs.release_tag }}
-        files: |
-            memos/memos-windows-amd64.tar.gz
-            memos/memos-freebsd-amd64.tar.gz
-            memos/memos-darwin-amd64.tar.gz
-            memos/memos-linux-amd64.tar.gz
-    - name: Delete workflow runs
-      uses: Mattraks/delete-workflow-runs@v2
-      with:
-        token: ${{ github.token }}
-        repository: ${{ github.repository }}
-        retain_days: 1
-        keep_minimum_runs: 8
+  publish:
+    name: Publish verified release
+    needs: [frontend, release]
+    if: inputs.publish && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: memos-pre-built-${{ needs.frontend.outputs.tag }}
+          path: dist
+      - name: Publish only explicitly requested, fully verified releases from main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.frontend.outputs.tag }}
+          PRERELEASE: ${{ needs.frontend.outputs.prerelease }}
+          LATEST: ${{ needs.frontend.outputs.latest }}
+        run: |
+          flags=()
+          if [[ "$PRERELEASE" == true ]]; then flags+=(--prerelease); fi
+          if [[ "$LATEST" == true ]]; then flags+=(--latest); fi
+          python scripts/release.py publish --tag "$TAG" --sha "$GITHUB_SHA" "${flags[@]}"

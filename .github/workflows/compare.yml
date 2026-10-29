@@ -2,38 +2,35 @@ name: Check Updates
 
 on:
   schedule:
-    - cron: '0 16 */1 * *'
+    - cron: '0 16 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  tests:
-    runs-on: ubuntu-latest
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      needed: ${{ steps.check.outputs.needed }}
     steps:
-      - uses: actions/checkout@v4
-      - name: compare versions
-        run: |
-          export REMOTEVERSION=$(wget -qO- https://api.github.com/repos/usememos/memos/tags | gawk -F '["v]' '/name/{print "v"$5;exit}')
-          export LOCALVERSION=$(curl --location --silent --fail --show-error "https://api.github.com/repos/k0baya/memos-freebsd/releases/latest" | grep -oP '"tag_name":\s*"\K[^"]+')
-          bash compare.sh
-          
-      - name: Trigger release
-        if: ${{ env.SYNCED == 0 }}
-        uses: actions/github-script@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          github-token: ${{ secrets.PAT_TOKEN }}
-          script: |
-              await github.rest.actions.createWorkflowDispatch({
-              owner: 'k0baya',
-              repo: 'memos-freebsd',
-              workflow_id: 'build.yml',
-              ref: 'main'
-              })
-              
-      - name: Delete workflow runs
-        if: ${{ env.SYNCED == 1 }}
-        uses: Mattraks/delete-workflow-runs@v2
-        with:
-          token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          retain_days: 1
-          keep_minimum_runs: 8
+          persist-credentials: false
+      - name: Check this repository for a complete latest stable release
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/release.py check-update
+
+  build:
+    needs: check
+    if: needs.check.outputs.needed == 'true'
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: write
+    with:
+      version: ${{ needs.check.outputs.tag }}
+      publish: true
