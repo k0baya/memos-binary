@@ -294,6 +294,15 @@ def publish(repository, directory, tag, commit, prerelease, latest):
     paths = [str(directory / name) for name in sorted(expected_assets() - {"checksums.txt"})]
     paths.append(str(directory / "checksums.txt"))
     subprocess.run(["gh", "release", "upload", tag, "--repo", repository, "--clobber", *paths], check=True)
+    body = release.get("body") or ""
+    if "<!-- android-runtime-v1 -->" not in body:
+        body += ("\n\n<!-- android-runtime-v1 -->\n"
+                 "**Android / Magisk:** Native API 26+ Bionic packages are included (not renamed Linux/musl binaries). "
+                 "They use only Android system libraries; no Termux, glibc, or musl installation is needed. "
+                 "Android API 26/35 x86_64 emulator tests and the BusyBox service-example test gate publication. "
+                 "**ARM64 physical Android/Magisk-device verification is still pending.** "
+                 "See the README for integration, private data paths, and SELinux/device limitations.")
+        subprocess.run(["gh", "release", "edit", tag, "--repo", repository, "--notes", body], check=True)
     if release["draft"]:
         subprocess.run(["gh", "release", "edit", tag, "--repo", repository, "--draft=false",
                         f"--prerelease={str(prerelease).lower()}", f"--latest={str(latest).lower()}"], check=True)

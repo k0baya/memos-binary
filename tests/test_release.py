@@ -226,6 +226,16 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(api.call_args.kwargs["data"]["make_latest"], "false")
         self.assertIn("--latest=true", run.call_args.args[0])
 
+    @patch("scripts.release.subprocess.run")
+    @patch("scripts.release.optional_release", return_value={"draft": False, "body": "Existing release notes"})
+    def test_existing_release_preserves_notes_and_warns_about_arm64_verification(self, _existing, run):
+        release.publish("custom/fork", self.dist, "v0.25.3", self.sha, False, False)
+        command = run.call_args.args[0]
+        self.assertIn("--notes", command)
+        self.assertTrue(command[-1].startswith("Existing release notes"))
+        self.assertIn("ARM64 physical Android/Magisk-device verification is still pending", command[-1])
+        self.assertNotIn("--latest=true", command)
+
     @patch("scripts.release.outputs")
     @patch("scripts.release.optional_release")
     @patch("scripts.release.resolve", return_value={"tag": "v0.31.0"})
