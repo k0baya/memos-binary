@@ -69,7 +69,7 @@ Android builds use `GOOS=android`, NDK 27.3.13750724, API 26, `CGO_ENABLED=1`, a
 
 The ELF audit requires native PIE, `/system/bin/linker64`, and only Android's built-in `libc.so`, `libdl.so`, `liblog.so`, or `libm.so`. A glibc, musl, `libc++_shared.so`, or other non-system runtime dependency fails the build. **Do not bundle/replace Android's Bionic libraries or linker.** ELF load segments are aligned for 16 KiB pages; this is an alignment check, not a claim of physical 16 KiB-device testing.
 
-CI runs the x86_64 Android package in Android API 26 and 35 emulators, checking the actual executable, all frontend assets, SQLite restart persistence, system DNS, and HTTPS using Android's CA store. **ARM64 is cross-compiled and ELF-audited but has not been tested on a physical Android/Magisk device.** `BUILD-INFO.json` records this limitation. OEM SELinux policies, root manager behavior, and device-specific kernels can still differ.
+CI runs the x86_64 Android package in Android API 26 and 35 emulators, checking the actual executable, all frontend assets, SQLite restart persistence, system DNS, and HTTPS using Android's CA store. A separate BusyBox-container test exercises the Magisk service example's startup lock, duplicate prevention, private data path, and restart persistence. **ARM64 is cross-compiled and ELF-audited but has not been tested on a physical Android/Magisk device.** `BUILD-INFO.json` records this limitation. OEM SELinux policies, root manager behavior, and device-specific kernels can still differ.
 
 For integration into an existing Magisk module:
 

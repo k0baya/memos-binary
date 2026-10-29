@@ -280,6 +280,17 @@ jobs:
           path: dist
       - name: Extract the native Android package
         run: mkdir extracted && tar -xzf dist/memos-android-amd64.tar.gz -C extracted
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: matrix.api == 35
+        with:
+          name: packages-linux-amd64
+          path: linux-package
+      - name: Validate the Magisk service example with real BusyBox and SQLite
+        if: matrix.api == 35
+        run: |
+          mkdir linux-extracted
+          tar -xzf linux-package/memos-linux-amd64.tar.gz -C linux-extracted
+          python -m scripts.magisk_smoke linux-extracted
       - name: Enable KVM for the disposable emulator
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm-memos.rules

@@ -28,7 +28,10 @@ def smoke(directory, probe, serial):
     prefix = ["adb", "-s", serial]
 
     def adb(*arguments):
-        result = subprocess.run([*prefix, *arguments], check=True, capture_output=True, text=True, timeout=90)
+        result = subprocess.run([*prefix, *arguments], capture_output=True, text=True, timeout=90)
+        if result.returncode:
+            print(result.stdout, result.stderr, flush=True)
+            result.check_returncode()
         return result.stdout.strip()
 
     def shell(command):
@@ -76,14 +79,14 @@ def smoke(directory, probe, serial):
 
     try:
         # Compiled with the same NDK, CGO and DNS tags as Memos, without public DNS overrides.
-        for attempt in range(3):
+        for attempt in range(12):
             try:
                 print(shell(shlex.quote(remote + "/dns-probe")), flush=True)
                 break
             except subprocess.CalledProcessError:
-                if attempt == 2:
+                if attempt == 11:
                     raise
-                time.sleep(3)
+                time.sleep(5)
         start_and_verify()
         with tempfile.TemporaryDirectory() as temporary:
             local = Path(temporary) / "before"
