@@ -19,6 +19,8 @@ Each complete release has 16 archives, `checksums.txt`, and `build-info.json`. E
 
 **musl details:** supported upstream versions use the pure-Go `modernc.org/sqlite` driver. Desktop/server packages use `CGO_ENABLED=0`; Linux executables have no dynamic ELF loader or shared-library dependency. The musl-labelled archives intentionally contain the **same static executable** as the corresponding Linux archive, not a different CGO/musl-linked build. They are tested in Alpine without glibc compatibility packages. Use these on Alpine/musl, or the regular Linux archives on glibc systems. Android is a separate native build, described below.
 
+Static does not mean all operating-system data is embedded: outbound HTTPS still needs the OS CA certificate bundle, and all platforms need a writable data directory, an available port, and a compatible kernel. No glibc compatibility package or separate SQLite/C runtime is required for the Linux/musl executables.
+
 armv7 requires ARMv7 hardware and the OS support required by the upstream Go/SQLite versions. There are no unsupported 32-bit x86 builds or CGO-disabled SQLite stubs. Runtime minimum OS/kernel versions follow the Go version recorded in `BUILD-INFO.json`; a FreeBSD VM pass is not proof that a particular shared-hosting service permits execution.
 
 ## Run
@@ -68,6 +70,8 @@ Use `memos-android-arm64.tar.gz` for a **64-bit Android userspace**, not a Linux
 Android builds use `GOOS=android`, NDK 27.3.13750724, API 26, `CGO_ENABLED=1`, and the `netcgo` resolver. Unlike the Linux static build, they intentionally use Android's system Bionic resolver so DNS and HTTPS work without `/etc/resolv.conf`, Termux, or hard-coded public DNS servers. SQLite itself remains the upstream pure-Go implementation.
 
 The ELF audit requires native PIE, `/system/bin/linker64`, and only Android's built-in `libc.so`, `libdl.so`, `liblog.so`, or `libm.so`. A glibc, musl, `libc++_shared.so`, or other non-system runtime dependency fails the build. **Do not bundle/replace Android's Bionic libraries or linker.** ELF load segments are aligned for 16 KiB pages; this is an alignment check, not a claim of physical 16 KiB-device testing.
+
+If an OEM exposes its trusted CA certificates only through the Conscrypt APEX store and HTTPS reports an unknown certificate authority, point Go at the existing system roots, for example `SSL_CERT_DIR=/apex/com.android.conscrypt/cacerts:/system/etc/security/cacerts`. Do not work around certificate errors by disabling TLS verification or downloading an untrusted CA bundle.
 
 CI runs the x86_64 Android package in Android API 26 and 35 emulators, checking the actual executable, all frontend assets, SQLite restart persistence, system DNS, and HTTPS using Android's CA store. A separate BusyBox-container test exercises the Magisk service example's startup lock, duplicate prevention, private data path, and restart persistence. **ARM64 is cross-compiled and ELF-audited but has not been tested on a physical Android/Magisk device.** `BUILD-INFO.json` records this limitation. OEM SELinux policies, root manager behavior, and device-specific kernels can still differ.
 
